@@ -1,0 +1,53 @@
+{
+  "name": "osv-guard",
+  "version": "0.1.0",
+  "description": "Guard `npm run` scripts behind an osv-scanner vulnerability check.",
+  "type": "module",
+  "bin": {
+    "osv-guard": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "test": "npm run build && node --test test/*.test.js"
+  },
+  "keywords": [
+    "osv",
+    "osv-scanner",
+    "security",
+    "vulnerability",
+    "audit",
+    "npm-run",
+    "cve",
+    "ghsa"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeka-kiselyov/osv-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jeka-kiselyov/osv-guard/issues"
+  },
+  "homepage": "https://github.com/jeka-kiselyov/osv-guard#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

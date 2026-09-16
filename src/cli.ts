@@ -1,0 +1,139 @@
+#!/usr/bin/env node
+import { existsSync } from 'node:fs';
+import { cacheKey, readCache, writeCache } from './cache.js';
+import { createColors } from './colors.js';
+import { UsageError, loadConfigFile, mergeOptions, parseArgv, type Options } from './config.js';
+import { HELP } from './help.js';
+import { applyPolicy } from './policy.js';
+import { findLockfiles, resolveProjectDir } from './resolve.js';
+import { render, type ReportContext } from './report.js';
+import { runNpmScript } from './run.js';
+import { ScannerError, buildArgs, runScan } from './scanner.js';
+import { VERSION } from './version.js';
+
+const EXIT_BLOCKED = 1;
+const EXIT_USAGE = 2;
+const EXIT_SCANNER = 3;
+
+async function main(argv: string[]): Promise<number> {
+  const parsed = parseArgv(argv);
+
+  if (parsed.command === 'help') {
+    process.stdout.write(`${HELP}\n`);
+    return argv.length === 0 ? EXIT_USAGE : 0;
+  }
+  if (parsed.command === 'version') {
+    process.stdout.write(`${VERSION}\n`);
+    return 0;
+  }
+
+  // The config file lives with the package being scanned, so the scan target
+  // has to be resolved before the config can be read — and again afterwards in
+  // case the config itself sets `dir`.
+  const initial = resolveProjectDir(parsed.cliOptions.dir, process.env, process.cwd());
+  const { config, path: configPath } = loadConfigFile(initial.dir);
+  const options: Options = mergeOptions(config, parsed.cliOptions);
+  const resolved = parsed.cliOptions.dir
+    ? initial
+    : resolveProjectDir(options.dir, process.env, process.cwd());
+  const dir = resolved.dir;
+  const colors = createColors(options.color);
+
+  if (options.verbose) {
+    warn(colors.gray(`osv-guard: scan target ${dir} (via ${resolved.via})`));
+    warn(colors.gray(`osv-guard: config ${configPath ?? '(defaults only)'}`));
+  }
+
+  if (!existsSync(dir)) {
+    throw new UsageError(`directory does not exist: ${dir}`);
+  }
+
+  const lockfiles = findLockfiles(dir);
+  if (lockfiles.length === 0 && !options.allowNoLockfile) {
+    throw new UsageError(
+      [
+        `no lockfile found in ${dir}`,
+        '',
+        'Without a lockfile osv-scanner has nothing to resolve, and an empty',
+        'result would look identical to a clean one. Run `npm install` first,',
+        'or pass --allow-no-lockfile if you accept an unchecked run.',
+      ].join('\n'),
+    );
+  }
+
+  const scanOptions = {
+    dir,
+    scannerBin: options.scannerBin,
+    offline: options.offline,
+    allVulns: options.allVulns,
+  };
+
+  let scan = null;
+  const key = options.cache
+    ? cacheKey({
+        dir,
+        lockfiles,
+        scannerVersion: null,
+        scanFlags: buildArgs(scanOptions).filter((a) => a !== dir),
+      })
+    : null;
+
+  if (key) scan = readCache(dir, key, options.cacheTtlMs);
+  if (!scan) {
+    scan = await runScan(scanOptions);
+    if (key) writeCache(dir, key, scan);
+  }
+
+  const policy = applyPolicy(scan.findings, options);
+  const ctx: ReportContext = { scan, policy, options, dir, lockfiles };
+
+  // In quiet mode a passing scan says nothing, so guarding a script does not
+  // bury its own output under a report every single run.
+  const shouldPrint = !options.quiet || policy.blocked || options.format === 'json';
+  if (shouldPrint) {
+    const { text, stream } = render(ctx);
+    (stream === 'stdout' ? process.stdout : process.stderr).write(`${text}\n`);
+  }
+
+  if (policy.blocked) {
+    if (parsed.command === 'run' && !options.quiet && options.format !== 'json') {
+      warn(colors.gray(`  \`npm run ${parsed.script}\` was not started.`));
+      warn('');
+    }
+    return EXIT_BLOCKED;
+  }
+
+  if (parsed.command === 'report') return 0;
+
+  const script = parsed.script;
+  if (!script) {
+    throw new UsageError('no script given — try `osv-guard <script>` or `osv-guard report`');
+  }
+
+  const { code } = await runNpmScript(script, parsed.scriptArgs, dir);
+  return code;
+}
+
+function warn(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
+const colors = createColors(undefined);
+
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (error) {
+  if (error instanceof UsageError) {
+    warn(`${colors.red('osv-guard:')} ${error.message}`);
+    warn(colors.gray('Run `osv-guard --help` for usage.'));
+    process.exitCode = EXIT_USAGE;
+  } else if (error instanceof ScannerError) {
+    warn(`${colors.red('osv-guard:')} ${error.message}`);
+    if (error.hint) warn(`\n${error.hint}`);
+    process.exitCode = EXIT_SCANNER;
+  } else {
+    warn(`${colors.red('osv-guard:')} unexpected error`);
+    warn(String((error as Error)?.stack ?? error));
+    process.exitCode = EXIT_SCANNER;
+  }
+}
