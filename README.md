@@ -42,37 +42,68 @@ Or `go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest`, or grab
 npm install --save-dev osv-guard
 ```
 
-Then add the passthrough script:
+Then put the guard in front of whatever you want to protect:
 
 ```json
 {
   "scripts": {
-    "dev": "vite",
-    "osv-guard": "osv-guard"
+    "dev": "osv-guard vite",
+    "build": "osv-guard hardhat build"
   }
 }
 ```
 
-```bash
-npm run osv-guard dev
-```
-
-On npm 6, extra args need the separator: `npm run osv-guard -- dev`. `npx osv-guard dev` works on every version.
+`npm run dev` / `pnpm dev` now scan first and start the tool only if the scan passes.
 
 ## Usage
 
 ```bash
-osv-guard <script> [script args...]   # scan, then `npm run <script>`
-osv-guard report                      # scan and print, run nothing
+osv-guard <target> [args...]        # scan, then run <target>
+osv-guard exec <command> [args]     # scan, then run a command directly
+osv-guard report                    # scan and print, run nothing
 ```
 
-Options go **before** the script name; everything after it is forwarded to the script.
+`<target>` is a **package.json script** when one matches, otherwise a **command** from `node_modules/.bin` or `PATH`. So both of these work:
+
+```bash
+osv-guard dev              # -> pnpm run dev
+osv-guard hardhat build    # -> hardhat build
+```
+
+A script always wins over a same-named binary; use `exec` to force the command. An unknown name is an error listing your actual scripts, not an opaque "command not found".
+
+Options go **before** the target; everything after it is forwarded verbatim.
 
 ```bash
 osv-guard --fail-on critical dev --port 3000
 ```
 
-osv-guard inserts npm's `--` separator for you, so `--port 3000` reaches your script rather than being eaten by npm.
+### Package managers
+
+Scripts run through the package manager your project actually uses — detected from the `packageManager` field, then the lockfile, then the invoking user agent — or forced with `--package-manager`.
+
+This matters for argument forwarding, which is **not** portable:
+
+| Command | Script receives |
+| --- | --- |
+| `npm run dev -- --port 3000` | `["--port","3000"]` ✅ |
+| `npm run dev --port 3000` | `["3000"]` — npm ate the flag |
+| `pnpm run dev -- --port 3000` | `["--","--port","3000"]` — literal `--` |
+| `pnpm run dev --port 3000` | `["--port","3000"]` ✅ |
+
+osv-guard applies the right form per package manager, so `--port 3000` arrives intact either way. Commands run directly, with nothing in between to reinterpret their flags.
+
+### Guarding a build
+
+```json
+{
+  "scripts": {
+    "build": "osv-guard hardhat build"
+  }
+}
+```
+
+Note that `"build": "osv-guard build"` would make osv-guard run `build`, which re-invokes osv-guard, forever. osv-guard detects that and refuses with the fix rather than hanging.
 
 ## Thresholds
 
@@ -104,6 +135,7 @@ For long-lived, per-advisory suppressions prefer osv-scanner's own `osv-scanner.
 | --- | --- |
 | `--dir`, `-C <path>` | Directory to scan (default: the package npm runs from) |
 | `--scanner-bin <path>` | osv-scanner binary (default: `osv-scanner`) |
+| `--package-manager <pm>` | Force `npm`, `pnpm`, `yarn` or `bun` instead of detecting |
 | `--offline` | Use osv-scanner's local database, no network |
 | `--all-vulns` | Include findings osv-scanner considers unimportant or uncalled |
 | `--allow-no-lockfile` | Don't fail when no lockfile is present |

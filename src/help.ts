@@ -2,12 +2,22 @@ export const HELP = `
 osv-guard — guard npm scripts behind an osv-scanner vulnerability check
 
 USAGE
-  osv-guard [options] <script> [script args...]   scan, then run \`npm run <script>\`
-  osv-guard report [options]                      scan and print a report only
-  osv-guard [options] -- <script> [args...]       explicit separator
+  osv-guard [options] <target> [args...]      scan, then run <target>
+  osv-guard exec [options] <command> [args]   scan, then run a command directly
+  osv-guard report [options]                  scan and print a report only
+  osv-guard [options] -- <target> [args...]   explicit separator
 
-  Options must come before the script name. Everything after the script name is
-  forwarded to it verbatim.
+  <target> is a package.json script when one matches, otherwise a command found
+  in node_modules/.bin or on PATH — so both of these work:
+
+    osv-guard dev                 ->  <pm> run dev
+    osv-guard hardhat build       ->  hardhat build
+
+  Scripts run through the project's package manager, detected from the
+  "packageManager" field, then the lockfile, then the invoking user agent.
+  Use \`exec\` to force command interpretation when a script shares the name.
+
+  Options must come before the target. Everything after it is forwarded verbatim.
 
 THRESHOLDS
   --fail-on <band>        block at this band and above (default: high)
@@ -29,6 +39,7 @@ SCANNING
   --dir, -C <path>        directory to scan (default: the package npm runs from;
                           scanning is recursive, so a monorepo root works)
   --scanner-bin <path>    osv-scanner binary (default: osv-scanner)
+  --package-manager <pm>  force npm | pnpm | yarn | bun instead of detecting
   --offline               use osv-scanner's local database, no network
   --all-vulns             include findings osv-scanner deems unimportant/uncalled
   --allow-no-lockfile     do not fail when no lockfile is present
@@ -61,8 +72,11 @@ EXIT CODES
   *   otherwise, the script's own exit code
 
 SETUP
-  Add to package.json:   "scripts": { "osv-guard": "osv-guard" }
-  Then:                  npm run osv-guard dev
+  Guard a command:       "build": "osv-guard hardhat build"
 
-  On npm 6 you need \`npm run osv-guard -- dev\`; \`npx osv-guard dev\` works everywhere.
+  Guard another script:  "build": "osv-guard build:run",
+                         "build:run": "hardhat build"
+
+  A script that invokes osv-guard directly (e.g. "build": "osv-guard build")
+  would run itself forever; osv-guard refuses that and says what to do instead.
 `.trim();

@@ -1,7 +1,7 @@
 {
   "name": "osv-guard",
-  "version": "0.1.0",
-  "description": "Guard `npm run` scripts behind an osv-scanner vulnerability check.",
+  "version": "0.2.0",
+  "description": "Guard npm/pnpm/yarn/bun scripts and commands behind an osv-scanner vulnerability check.",
   "type": "module",
   "bin": {
     "osv-guard": "dist/cli.js"

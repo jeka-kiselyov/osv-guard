@@ -7,8 +7,10 @@ import { HELP } from './help.js';
 import { applyPolicy } from './policy.js';
 import { findLockfiles, resolveProjectDir } from './resolve.js';
 import { render, type ReportContext } from './report.js';
-import { runNpmScript } from './run.js';
+import { assertNotLooping, planRun, runTarget, RecursionError } from './run.js';
 import { ScannerError, buildArgs, runScan } from './scanner.js';
+import { detectPackageManager } from './pm.js';
+import { TargetError, resolveTarget, type RunTarget } from './target.js';
 import { VERSION } from './version.js';
 
 const EXIT_BLOCKED = 1;
@@ -46,6 +48,23 @@ async function main(argv: string[]): Promise<number> {
 
   if (!existsSync(dir)) {
     throw new UsageError(`directory does not exist: ${dir}`);
+  }
+
+  // Resolve what we are guarding before scanning: a typo'd script name or a
+  // self-invoking script should fail immediately, not after a slow scan.
+  let target: RunTarget | null = null;
+  const pm = detectPackageManager(dir, options.packageManager, process.env);
+  if (parsed.command === 'run') {
+    if (!parsed.script) {
+      throw new UsageError('nothing to run — try `osv-guard <script>` or `osv-guard report`');
+    }
+    assertNotLooping(process.env);
+    target = resolveTarget(dir, parsed.script, { forceCommand: parsed.forceCommand });
+    if (options.verbose) {
+      const plan = planRun({ target, args: parsed.scriptArgs, dir, pm: pm.pm });
+      warn(colors.gray(`osv-guard: package manager ${pm.pm} (via ${pm.via})`));
+      warn(colors.gray(`osv-guard: ${target.kind} target -> ${plan.command} ${plan.argv.join(' ')}`));
+    }
   }
 
   const lockfiles = findLockfiles(dir);
@@ -96,21 +115,21 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (policy.blocked) {
-    if (parsed.command === 'run' && !options.quiet && options.format !== 'json') {
-      warn(colors.gray(`  \`npm run ${parsed.script}\` was not started.`));
+    if (target && !options.quiet && options.format !== 'json') {
+      const plan = planRun({ target, args: parsed.scriptArgs, dir, pm: pm.pm });
+      const shown =
+        target.kind === 'script'
+          ? `${pm.pm} ${plan.argv.join(' ')}`
+          : [target.name, ...parsed.scriptArgs].join(' ');
+      warn(colors.gray(`  \`${shown}\` was not started.`));
       warn('');
     }
     return EXIT_BLOCKED;
   }
 
-  if (parsed.command === 'report') return 0;
+  if (parsed.command === 'report' || !target) return 0;
 
-  const script = parsed.script;
-  if (!script) {
-    throw new UsageError('no script given — try `osv-guard <script>` or `osv-guard report`');
-  }
-
-  const { code } = await runNpmScript(script, parsed.scriptArgs, dir);
+  const { code } = await runTarget({ target, args: parsed.scriptArgs, dir, pm: pm.pm });
   return code;
 }
 
@@ -126,6 +145,13 @@ try {
   if (error instanceof UsageError) {
     warn(`${colors.red('osv-guard:')} ${error.message}`);
     warn(colors.gray('Run `osv-guard --help` for usage.'));
+    process.exitCode = EXIT_USAGE;
+  } else if (error instanceof TargetError) {
+    warn(`${colors.red('osv-guard:')} ${error.message}`);
+    if (error.hint) warn(`\n${error.hint}`);
+    process.exitCode = EXIT_USAGE;
+  } else if (error instanceof RecursionError) {
+    warn(`${colors.red('osv-guard:')} ${error.message}`);
     process.exitCode = EXIT_USAGE;
   } else if (error instanceof ScannerError) {
     warn(`${colors.red('osv-guard:')} ${error.message}`);

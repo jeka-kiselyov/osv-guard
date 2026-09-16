@@ -17,6 +17,7 @@ export interface Options {
   offline: boolean;
   allVulns: boolean;
   scannerBin: string;
+  packageManager: string | undefined;
   allowNoLockfile: boolean;
   quiet: boolean;
   verbose: boolean;
@@ -25,6 +26,8 @@ export interface Options {
 
 export interface ParsedArgv {
   command: 'run' | 'report' | 'help' | 'version';
+  /** `exec` was used: treat the target as a command, never a script. */
+  forceCommand: boolean;
   /** npm script name for `run`. */
   script: string | undefined;
   /** Arguments forwarded verbatim to the npm script. */
@@ -46,6 +49,7 @@ export const DEFAULTS: Options = {
   offline: false,
   allVulns: false,
   scannerBin: 'osv-scanner',
+  packageManager: undefined,
   allowNoLockfile: false,
   quiet: false,
   verbose: false,
@@ -106,6 +110,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
   const max: Partial<Record<Band, number>> = {};
   let command: ParsedArgv['command'] | null = null;
   let script: string | undefined;
+  let forceCommand = false;
   const scriptArgs: string[] = [];
 
   let i = 0;
@@ -136,6 +141,16 @@ export function parseArgv(argv: string[]): ParsedArgv {
       if (token === 'run') {
         // `osv-guard run dev` — tolerate the explicit verb.
         continue;
+      }
+      if (token === 'exec') {
+        // Everything after `exec` is a command line, flags included.
+        forceCommand = true;
+        const rest = argv.slice(i + 1);
+        if (rest.length > 0) {
+          script = rest[0];
+          scriptArgs.push(...rest.slice(1));
+        }
+        break;
       }
       script = token;
       scriptArgs.push(...argv.slice(i + 1));
@@ -225,6 +240,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case '--scanner-bin':
         cli.scannerBin = value();
         break;
+      case '--package-manager':
+      case '--pm':
+        cli.packageManager = value();
+        break;
       case '--allow-no-lockfile':
         cli.allowNoLockfile = true;
         break;
@@ -251,6 +270,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
 
   return {
     command: command ?? (script ? 'run' : 'help'),
+    forceCommand,
     script,
     scriptArgs,
     cliOptions: cli,
@@ -331,6 +351,8 @@ function coerceConfig(raw: unknown, label: string): Partial<Options> {
 
   const scannerBin = str('scannerBin');
   if (scannerBin !== undefined) out.scannerBin = scannerBin;
+  const packageManager = str('packageManager');
+  if (packageManager !== undefined) out.packageManager = packageManager;
   const dir = str('dir');
   if (dir !== undefined) out.dir = dir;
   const cacheTtl = input.cacheTtl;

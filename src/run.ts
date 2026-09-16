@@ -1,39 +1,88 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { buildRunArgs, pmExecutable, type PackageManager } from './pm.js';
+import { binDir, type RunTarget } from './target.js';
 
-/** npm ships as a .cmd shim on Windows, which needs a shell to launch. */
-function npmCommand(): { command: string; shell: boolean } {
-  if (process.platform === 'win32') return { command: 'npm.cmd', shell: true };
-  return { command: 'npm', shell: false };
+/** Marks a guarded child, so nested osv-guard invocations can be detected. */
+export const DEPTH_ENV = 'OSV_GUARD_DEPTH';
+
+/** One nested level is plausible; beyond that it is a loop. */
+const MAX_DEPTH = 2;
+
+export class RecursionError extends Error {}
+
+export interface RunOptions {
+  target: RunTarget;
+  args: string[];
+  dir: string;
+  pm: PackageManager;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface RunOutcome {
+  code: number;
+  signal: NodeJS.Signals | null;
+  /** The argv actually spawned, for --verbose and for tests. */
+  argv: string[];
+}
+
+/** What we will spawn, without spawning it. */
+export function planRun(options: RunOptions): { command: string; argv: string[]; shell: boolean } {
+  if (options.target.kind === 'script') {
+    const { command, shell } = pmExecutable(options.pm);
+    return { command, argv: buildRunArgs(options.pm, options.target.name, options.args), shell };
+  }
+  // A command runs directly: no package manager wrapping, so nothing can
+  // reinterpret its flags on the way through.
+  return { command: options.target.resolved, argv: [...options.args], shell: false };
+}
+
+function childEnv(dir: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const depth = Number.parseInt(env[DEPTH_ENV] ?? '0', 10);
+  const next = Number.isFinite(depth) ? depth + 1 : 1;
+  // Put the project's own tools first, so a guarded command resolves the same
+  // binaries a package-manager script would have.
+  const PATH = [binDir(dir), env.PATH ?? ''].filter(Boolean).join(path.delimiter);
+  return { ...env, PATH, [DEPTH_ENV]: String(next) };
+}
+
+export function currentDepth(env: NodeJS.ProcessEnv = process.env): number {
+  const depth = Number.parseInt(env[DEPTH_ENV] ?? '0', 10);
+  return Number.isFinite(depth) ? depth : 0;
+}
+
+export function assertNotLooping(env: NodeJS.ProcessEnv = process.env): void {
+  if (currentDepth(env) >= MAX_DEPTH) {
+    throw new RecursionError(
+      `osv-guard has re-entered itself ${currentDepth(env)} times — the guarded script probably invokes osv-guard again`,
+    );
+  }
 }
 
 /**
- * Run `npm run <script> [args]` in `dir`, inheriting stdio, and resolve with
- * the child's exit code.
+ * Run the target, inheriting stdio, and resolve with its exit code.
  *
  * Signals are forwarded rather than letting the default handler kill us first:
- * a Ctrl-C on a guarded dev server should reach the dev server, and we should
+ * Ctrl-C on a guarded dev server should reach the dev server, and we should
  * exit only once it has.
  */
-export function runNpmScript(
-  script: string,
-  args: string[],
-  dir: string,
-): Promise<{ code: number; signal: NodeJS.Signals | null }> {
-  const { command, shell } = npmCommand();
-  // `npm run dev --port 3000` lets npm swallow `--port` as its own config, so
-  // the script only ever sees `3000`. We already know every one of these args
-  // belongs to the script, so pass them past npm with an explicit separator.
-  const argv = args.length > 0 ? ['run', script, '--', ...args] : ['run', script];
+export function runTarget(options: RunOptions): Promise<RunOutcome> {
+  const env = options.env ?? process.env;
+  const { command, argv, shell } = planRun(options);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(command, argv, { cwd: dir, stdio: 'inherit', shell });
+    const child = spawn(command, argv, {
+      cwd: options.dir,
+      stdio: 'inherit',
+      shell,
+      env: childEnv(options.dir, env),
+    });
 
     const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-    const forward = (signal: NodeJS.Signals) => () => {
-      if (!child.killed) child.kill(signal);
-    };
     const handlers = signals.map((signal) => {
-      const handler = forward(signal);
+      const handler = () => {
+        if (!child.killed) child.kill(signal);
+      };
       process.on(signal, handler);
       return { signal, handler };
     });
@@ -49,7 +98,11 @@ export function runNpmScript(
       cleanup();
       // A signal-terminated child has no exit code; report it the way a shell
       // would so `$?` still distinguishes "killed" from "exited cleanly".
-      resolve({ code: code ?? (signal ? 128 + signalNumber(signal) : 1), signal });
+      resolve({
+        code: code ?? (signal ? 128 + signalNumber(signal) : 1),
+        signal,
+        argv: [command, ...argv],
+      });
     });
   });
 }
