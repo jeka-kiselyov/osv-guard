@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { buildRunArgs, detectPackageManager } from '../dist/pm.js';
-import { DEPTH_ENV, assertNotLooping, currentDepth, planRun, RecursionError } from '../dist/run.js';
+import { DEPTH_ENV, assertNotLooping, currentDepth, planRun, runCwd, RecursionError } from '../dist/run.js';
 import { TargetError, invokesOsvGuard, readScripts, resolveTarget } from '../dist/target.js';
 
 function project({ scripts = {}, lockfile = null, packageManager = null, bins = [] } = {}) {
@@ -242,4 +242,42 @@ test('planRun runs a command directly, with no package manager in the way', () =
 
   assert.equal(plan.command, '/p/node_modules/.bin/hardhat');
   assert.deepEqual(plan.argv, ['build', '--network', 'local'], 'flags reach the tool untouched');
+});
+
+// --- working directory ---
+
+test('a command keeps the user\'s working directory', () => {
+  // Running a command through the guard must be indistinguishable from running
+  // it directly, so `osv-guard jest src/x.test.js` still resolves that path.
+  const cwd = runCwd({
+    target: { kind: 'command', name: 'hardhat', resolved: '/p/node_modules/.bin/hardhat' },
+    args: [],
+    dir: '/p',
+    cwd: '/p/src',
+    pm: 'pnpm',
+  });
+
+  assert.equal(cwd, '/p/src');
+});
+
+test('a script runs from the package root, as package managers do', () => {
+  // `npm run` / `pnpm run` never run a script from wherever you were standing.
+  const cwd = runCwd({
+    target: { kind: 'script', name: 'build', body: 'tsc' },
+    args: [],
+    dir: '/p',
+    cwd: '/p/src',
+    pm: 'pnpm',
+  });
+
+  assert.equal(cwd, '/p');
+});
+
+test('runCwd falls back to the package root when no cwd is given', () => {
+  for (const target of [
+    { kind: 'command', name: 'x', resolved: '/p/x' },
+    { kind: 'script', name: 'x', body: 'echo' },
+  ]) {
+    assert.equal(runCwd({ target, args: [], dir: '/p', pm: 'npm' }), '/p');
+  }
 });

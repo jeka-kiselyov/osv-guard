@@ -7,7 +7,7 @@ import { HELP } from './help.js';
 import { applyPolicy } from './policy.js';
 import { findLockfiles, resolveProjectDir } from './resolve.js';
 import { render, type ReportContext } from './report.js';
-import { assertNotLooping, planRun, runTarget, RecursionError } from './run.js';
+import { assertNotLooping, planRun, runCwd, runTarget, RecursionError } from './run.js';
 import { ScannerError, buildArgs, runScan } from './scanner.js';
 import { detectPackageManager } from './pm.js';
 import { TargetError, resolveTarget, type RunTarget } from './target.js';
@@ -19,6 +19,7 @@ const EXIT_SCANNER = 3;
 
 async function main(argv: string[]): Promise<number> {
   const parsed = parseArgv(argv);
+  const invokedFrom = process.cwd();
 
   if (parsed.command === 'help') {
     process.stdout.write(`${HELP}\n`);
@@ -61,9 +62,11 @@ async function main(argv: string[]): Promise<number> {
     assertNotLooping(process.env);
     target = resolveTarget(dir, parsed.script, { forceCommand: parsed.forceCommand });
     if (options.verbose) {
-      const plan = planRun({ target, args: parsed.scriptArgs, dir, pm: pm.pm });
+      const run = { target, args: parsed.scriptArgs, dir, cwd: invokedFrom, pm: pm.pm };
+      const plan = planRun(run);
       warn(colors.gray(`osv-guard: package manager ${pm.pm} (via ${pm.via})`));
       warn(colors.gray(`osv-guard: ${target.kind} target -> ${plan.command} ${plan.argv.join(' ')}`));
+      warn(colors.gray(`osv-guard: running in ${runCwd(run)}`));
     }
   }
 
@@ -116,7 +119,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (policy.blocked) {
     if (target && !options.quiet && options.format !== 'json') {
-      const plan = planRun({ target, args: parsed.scriptArgs, dir, pm: pm.pm });
+      const plan = planRun({ target, args: parsed.scriptArgs, dir, cwd: invokedFrom, pm: pm.pm });
       const shown =
         target.kind === 'script'
           ? `${pm.pm} ${plan.argv.join(' ')}`
@@ -129,7 +132,7 @@ async function main(argv: string[]): Promise<number> {
 
   if (parsed.command === 'report' || !target) return 0;
 
-  const { code } = await runTarget({ target, args: parsed.scriptArgs, dir, pm: pm.pm });
+  const { code } = await runTarget({ target, args: parsed.scriptArgs, dir, cwd: invokedFrom, pm: pm.pm });
   return code;
 }
 

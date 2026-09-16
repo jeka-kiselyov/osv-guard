@@ -3,7 +3,7 @@ export { applyPolicy, countBands, type PolicyResult } from './policy.js';
 export { render, renderJson, renderPretty, renderSummary, sortFindings } from './report.js';
 export { runScan, buildArgs, detectScannerVersion, ScannerError } from './scanner.js';
 export { findLockfiles, resolveProjectDir } from './resolve.js';
-export { runTarget, planRun, assertNotLooping, currentDepth, RecursionError, DEPTH_ENV } from './run.js';
+export { runTarget, planRun, runCwd, assertNotLooping, currentDepth, RecursionError, DEPTH_ENV } from './run.js';
 export { detectPackageManager, buildRunArgs, pmExecutable, PACKAGE_MANAGERS, type PackageManager } from './pm.js';
 export { resolveTarget, readScripts, invokesOsvGuard, binDir, TargetError, type RunTarget } from './target.js';
 export { cvss3BaseScore, resolveSeverity, scoreToBand, normalizeBandName } from './severity.js';

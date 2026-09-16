@@ -14,7 +14,10 @@ export class RecursionError extends Error {}
 export interface RunOptions {
   target: RunTarget;
   args: string[];
+  /** The package root: where the scan ran and where scripts must execute. */
   dir: string;
+  /** Where the user actually invoked osv-guard. Defaults to the package root. */
+  cwd?: string;
   pm: PackageManager;
   env?: NodeJS.ProcessEnv;
 }
@@ -24,6 +27,20 @@ export interface RunOutcome {
   signal: NodeJS.Signals | null;
   /** The argv actually spawned, for --verbose and for tests. */
   argv: string[];
+}
+
+/**
+ * Where the child should run.
+ *
+ * A script runs from the package root, because that is what every package
+ * manager does — `npm run` and `pnpm run` never run a script from wherever you
+ * happened to be standing. A command is different: running it through the
+ * guard must be indistinguishable from running it directly, so it keeps the
+ * user's own working directory and its relative paths still mean what they say.
+ */
+export function runCwd(options: RunOptions): string {
+  if (options.target.kind === 'script') return options.dir;
+  return options.cwd ?? options.dir;
 }
 
 /** What we will spawn, without spawning it. */
@@ -72,7 +89,7 @@ export function runTarget(options: RunOptions): Promise<RunOutcome> {
 
   return new Promise((resolve, reject) => {
     const child = spawn(command, argv, {
-      cwd: options.dir,
+      cwd: runCwd(options),
       stdio: 'inherit',
       shell,
       env: childEnv(options.dir, env),

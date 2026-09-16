@@ -72,6 +72,8 @@ osv-guard hardhat build    # -> hardhat build
 
 A script always wins over a same-named binary; use `exec` to force the command. An unknown name is an error listing your actual scripts, not an opaque "command not found".
 
+The two kinds differ in working directory, matching what each would do unguarded: a **script** runs from the package root, as `npm run` and `pnpm run` always do, while a **command** keeps your current directory, so relative paths like `osv-guard jest src/x.test.js` still mean what they say.
+
 Options go **before** the target; everything after it is forwarded verbatim.
 
 ```bash
