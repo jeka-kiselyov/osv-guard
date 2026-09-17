@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/guard-install.sh\"",
+            "timeout": 20,
+            "statusMessage": "osv-guard: checking packages..."
+          }
+        ]
+      }
+    ]
+  }
+}

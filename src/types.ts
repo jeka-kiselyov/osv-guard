@@ -28,6 +28,8 @@ export interface OsvRawRangeEvent {
 export interface OsvRawAffected {
   package?: { ecosystem?: string; name?: string };
   ranges?: { type?: string; events?: OsvRawRangeEvent[] }[];
+  /** Explicit version list — how malicious-package advisories enumerate. */
+  versions?: string[];
 }
 
 export interface OsvRawVulnerability {

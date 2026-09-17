@@ -25,7 +25,7 @@ export interface Options {
 }
 
 export interface ParsedArgv {
-  command: 'run' | 'report' | 'help' | 'version';
+  command: 'run' | 'report' | 'hook' | 'help' | 'version';
   /** `exec` was used: treat the target as a command, never a script. */
   forceCommand: boolean;
   /** npm script name for `run`. */
@@ -136,6 +136,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
     if (!token.startsWith('-')) {
       if (token === 'report' || token === 'scan') {
         command = 'report';
+        continue;
+      }
+      if (token === 'hook') {
+        command = 'hook';
         continue;
       }
       if (token === 'run') {

@@ -20,4 +20,7 @@ export {
   type Format,
 } from './config.js';
 export { VERSION } from './version.js';
+export { evaluateCommand, parseHookInput, toHookOutput, type Decision, type HookOutcome } from './hook.js';
+export { parseInstallCommand, parseSpec, isPackageArgument, isExactVersion, segments, type InstallSpec } from './installcmd.js';
+export { queryPackage, queryAll, isMalicious, toScanOutput } from './osvapi.js';
 export * from './types.js';

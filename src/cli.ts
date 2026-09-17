@@ -12,6 +12,7 @@ import { ScannerError, buildArgs, runScan } from './scanner.js';
 import { detectPackageManager } from './pm.js';
 import { TargetError, resolveTarget, type RunTarget } from './target.js';
 import { VERSION } from './version.js';
+import { evaluateCommand, parseHookInput, toHookOutput } from './hook.js';
 
 const EXIT_BLOCKED = 1;
 const EXIT_USAGE = 2;
@@ -28,6 +29,10 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === 'version') {
     process.stdout.write(`${VERSION}\n`);
     return 0;
+  }
+
+  if (parsed.command === 'hook') {
+    return runHook(parsed.cliOptions);
   }
 
   // The config file lives with the package being scanned, so the scan target
@@ -134,6 +139,36 @@ async function main(argv: string[]): Promise<number> {
 
   const { code } = await runTarget({ target, args: parsed.scriptArgs, dir, cwd: invokedFrom, pm: pm.pm });
   return code;
+}
+
+/**
+ * Claude Code PreToolUse hook: read the tool call on stdin, decide, print the
+ * decision as JSON.
+ *
+ * It always exits 0 — the verdict travels in the JSON, and a non-zero exit
+ * would read as "the hook is broken" rather than "this install is dangerous".
+ * Anything unexpected (bad input, no network) allows rather than blocks, so a
+ * failure here can never wedge the user's session.
+ */
+async function runHook(cliOptions: Partial<Options>): Promise<number> {
+  let raw = '';
+  for await (const chunk of process.stdin) raw += chunk;
+
+  const input = parseHookInput(raw);
+  const command = input?.tool_input?.command;
+  if (!input || input.tool_name !== 'Bash' || !command) return 0;
+
+  const dir = input.cwd ?? process.cwd();
+  try {
+    const outcome = await evaluateCommand(command, dir, cliOptions);
+    if (outcome.decision === 'allow') return 0;
+    process.stderr.write(`${outcome.reason}\n`);
+    process.stdout.write(`${toHookOutput(outcome)}\n`);
+  } catch {
+    // Never let a hook failure block the user.
+    return 0;
+  }
+  return 0;
 }
 
 function warn(message: string): void {

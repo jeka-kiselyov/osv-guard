@@ -185,6 +185,38 @@ If there's no lockfile anywhere in the tree, osv-guard stops rather than scannin
 
 Reports go to **stderr** and `--format=json` goes to stdout, so `osv-guard report --json | jq` works while a guarded script keeps its own stdout clean.
 
+## Claude Code plugin
+
+osv-guard also ships as a Claude Code plugin. The CLI guards what you **run**; the plugin guards what gets **installed** — which is the gap the CLI cannot reach, because by the time a bad dependency is in your lockfile its install scripts have already executed.
+
+It hooks `PreToolUse` on `Bash`, spots install commands for npm, pnpm, yarn, bun, pip, uv and poetry, and checks each package against OSV before the command runs:
+
+```
+MALICIOUS  custom-solutions@20.8.9 — MAL-2024-1000
+           affected versions: 20.8.9, 20.9.1, 20.8.8
+           Malicious code in custom-solutions (npm)
+
+osv-guard blocked this install: OSV reports the package itself as malicious.
+```
+
+| Situation | Decision |
+| --- | --- |
+| OSV reports the package as malicious | **deny** — always, and no `ignore` entry can waive it |
+| Vulnerability at or above your threshold | **ask** — you decide |
+| Anything else, or OSV unreachable | **allow**, silently |
+
+Malware is denied rather than asked because it isn't a severity judgement. It's also why malicious packages are handled separately from thresholds at all: OSV's malicious-package advisories carry **no severity data**, so a threshold alone would band every one of them `unknown` and let them through.
+
+A vulnerability is only `ask`: a known CVE in a dependency is often a considered trade-off, and that call belongs to a person. A failed lookup allows — a guard that blocks every install whenever OSV is unreachable is one people switch off.
+
+The hook reads the same `osv-guard.json` as the CLI, so `failOn` and `ignore` apply to both. It needs no osv-scanner binary: packages that aren't installed yet aren't in any lockfile, so it queries the OSV API directly.
+
+You can also run it by hand:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"npm i minimist@0.0.8"}}' | osv-guard hook
+```
+
 ## Config file
 
 Settings can live in `osv-guard.json`, `.osv-guardrc.json`, or an `osv-guard` key in `package.json`. Command-line flags win.

@@ -1,6 +1,6 @@
 {
   "name": "osv-guard",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Guard npm/pnpm/yarn/bun scripts and commands behind an osv-scanner vulnerability check.",
   "type": "module",
   "bin": {
@@ -16,6 +16,8 @@
   },
   "files": [
     "dist",
+    "hooks",
+    ".claude-plugin",
     "README.md",
     "LICENSE"
   ],
