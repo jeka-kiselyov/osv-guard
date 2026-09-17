@@ -14,6 +14,10 @@ export interface Options {
     allVulns: boolean;
     scannerBin: string;
     packageManager: string | undefined;
+    /** Block installs of versions published less than this long ago. 0 disables. */
+    minReleaseAgeMs: number;
+    /** Packages exempt from the age check: "name" or "name@version". */
+    allowNewPackages: string[];
     allowNoLockfile: boolean;
     quiet: boolean;
     verbose: boolean;

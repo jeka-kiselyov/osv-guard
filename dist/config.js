@@ -15,6 +15,10 @@ export const DEFAULTS = {
     allVulns: false,
     scannerBin: 'osv-scanner',
     packageManager: undefined,
+    // Seven days clears the window in which most malicious releases are caught
+    // and pulled, while rarely catching a package anyone urgently needs.
+    minReleaseAgeMs: 7 * 24 * 60 * 60 * 1000,
+    allowNewPackages: [],
     allowNoLockfile: false,
     quiet: false,
     verbose: false,
@@ -68,6 +72,7 @@ function asCount(value, flag) {
 export function parseArgv(argv) {
     const cli = {};
     const ignore = [];
+    const allowNew = [];
     const max = {};
     let command = null;
     let script;
@@ -202,6 +207,18 @@ export function parseArgv(argv) {
             case '--pm':
                 cli.packageManager = value();
                 break;
+            case '--min-release-age':
+                cli.minReleaseAgeMs = parseDuration(value());
+                break;
+            case '--no-min-release-age':
+                cli.minReleaseAgeMs = 0;
+                break;
+            case '--allow-new':
+                allowNew.push(...value()
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean));
+                break;
             case '--allow-no-lockfile':
                 cli.allowNoLockfile = true;
                 break;
@@ -224,6 +241,8 @@ export function parseArgv(argv) {
     }
     if (ignore.length > 0)
         cli.ignore = ignore;
+    if (allowNew.length > 0)
+        cli.allowNewPackages = allowNew;
     if (Object.keys(max).length > 0)
         cli.max = max;
     return {
@@ -316,6 +335,18 @@ function coerceConfig(raw, label) {
     const packageManager = str('packageManager');
     if (packageManager !== undefined)
         out.packageManager = packageManager;
+    const minReleaseAge = input.minReleaseAge;
+    if (minReleaseAge !== undefined) {
+        out.minReleaseAgeMs =
+            typeof minReleaseAge === 'number' ? minReleaseAge : parseDuration(String(minReleaseAge));
+    }
+    if (input.allowNewPackages !== undefined) {
+        if (!Array.isArray(input.allowNewPackages) ||
+            input.allowNewPackages.some((v) => typeof v !== 'string')) {
+            throw new UsageError(`${label}: "allowNewPackages" must be an array of package names`);
+        }
+        out.allowNewPackages = input.allowNewPackages;
+    }
     const dir = str('dir');
     if (dir !== undefined)
         out.dir = dir;
@@ -351,6 +382,10 @@ export function mergeOptions(fileConfig, cli) {
         ...stripUndefined(cli),
         max: { ...(fileConfig.max ?? {}), ...(cli.max ?? {}) },
         ignore: [...(fileConfig.ignore ?? []), ...(cli.ignore ?? [])],
+        allowNewPackages: [
+            ...(fileConfig.allowNewPackages ?? []),
+            ...(cli.allowNewPackages ?? []),
+        ],
     };
 }
 function stripUndefined(obj) {

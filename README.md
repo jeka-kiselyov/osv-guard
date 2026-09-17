@@ -45,11 +45,31 @@ It hooks `PreToolUse` on `Bash` and inspects install commands for **npm, pnpm, y
 | --- | --- |
 | OSV reports the package as malicious | **deny** — always, and no `ignore` entry can waive it |
 | Vulnerability at or above your threshold | **ask** — you decide |
-| Anything else, or OSV unreachable | **allow**, silently |
+| Version published less than 7 days ago | **ask** — you decide |
+| Anything else, or a registry unreachable | **allow**, silently |
 
 Malware is denied rather than asked because it isn't a severity judgement. That separation is also load-bearing: OSV's malicious-package advisories carry **no severity data at all**, so a threshold on its own would band every one of them `unknown` and wave them through.
 
 A vulnerability only asks. A known CVE in a dependency is often a considered trade-off, and that call belongs to a person. A failed lookup allows — a guard that blocks every install whenever OSV is unreachable is a guard people switch off.
+
+### Brand-new releases
+
+A version published minutes ago is the riskiest thing you can install: when a package is compromised, the malicious release is usually caught and pulled within hours to a few days. osv-guard holds anything younger than **7 days** and asks:
+
+```
+TOO NEW    left-pad@1.3.1 — published 4 hours ago
+
+osv-guard holds releases younger than 7 days: that is the window in which a
+compromised release is usually caught and pulled. Approve to install anyway, or
+pin an older version. To stop asking: add "allowNewPackages": ["left-pad"]
+to osv-guard.json, or set "minReleaseAge": 0 to turn the check off.
+```
+
+Approving the prompt installs it — this is a speed bump, not a wall. An install with no version pinned is measured against whatever `latest` currently resolves to, since that's what you'd actually get.
+
+Tune it in [config](#config-file) with `minReleaseAge` (`"0"` disables, `"24h"`, `"30d"`) and `allowNewPackages` for packages you always want fresh — your own, typically.
+
+If a registry is slow or a package predates its publish-time data, the age is unknown and the install is **allowed**. Failing closed would block everything during an outage, and that guard gets switched off.
 
 The hook reads the same [config file](#config-file) as the CLI, so `failOn` and `ignore` apply to both.
 
@@ -268,7 +288,9 @@ Shared by the CLI and the plugin. Settings can live in `osv-guard.json`, `.osv-g
   "failOn": "high",
   "max": { "critical": 0 },
   "ignore": ["GHSA-xxxx-xxxx-xxxx"],
-  "ignoreUnfixed": true
+  "ignoreUnfixed": true,
+  "minReleaseAge": "7d",
+  "allowNewPackages": ["my-own-package"]
 }
 ```
 

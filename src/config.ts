@@ -18,6 +18,10 @@ export interface Options {
   allVulns: boolean;
   scannerBin: string;
   packageManager: string | undefined;
+  /** Block installs of versions published less than this long ago. 0 disables. */
+  minReleaseAgeMs: number;
+  /** Packages exempt from the age check: "name" or "name@version". */
+  allowNewPackages: string[];
   allowNoLockfile: boolean;
   quiet: boolean;
   verbose: boolean;
@@ -50,6 +54,10 @@ export const DEFAULTS: Options = {
   allVulns: false,
   scannerBin: 'osv-scanner',
   packageManager: undefined,
+  // Seven days clears the window in which most malicious releases are caught
+  // and pulled, while rarely catching a package anyone urgently needs.
+  minReleaseAgeMs: 7 * 24 * 60 * 60 * 1000,
+  allowNewPackages: [],
   allowNoLockfile: false,
   quiet: false,
   verbose: false,
@@ -107,6 +115,7 @@ function asCount(value: string, flag: string): number {
 export function parseArgv(argv: string[]): ParsedArgv {
   const cli: Partial<Options> = {};
   const ignore: string[] = [];
+  const allowNew: string[] = [];
   const max: Partial<Record<Band, number>> = {};
   let command: ParsedArgv['command'] | null = null;
   let script: string | undefined;
@@ -248,6 +257,20 @@ export function parseArgv(argv: string[]): ParsedArgv {
       case '--pm':
         cli.packageManager = value();
         break;
+      case '--min-release-age':
+        cli.minReleaseAgeMs = parseDuration(value());
+        break;
+      case '--no-min-release-age':
+        cli.minReleaseAgeMs = 0;
+        break;
+      case '--allow-new':
+        allowNew.push(
+          ...value()
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        );
+        break;
       case '--allow-no-lockfile':
         cli.allowNoLockfile = true;
         break;
@@ -270,6 +293,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
   }
 
   if (ignore.length > 0) cli.ignore = ignore;
+  if (allowNew.length > 0) cli.allowNewPackages = allowNew;
   if (Object.keys(max).length > 0) cli.max = max;
 
   return {
@@ -357,6 +381,22 @@ function coerceConfig(raw: unknown, label: string): Partial<Options> {
   if (scannerBin !== undefined) out.scannerBin = scannerBin;
   const packageManager = str('packageManager');
   if (packageManager !== undefined) out.packageManager = packageManager;
+
+  const minReleaseAge = input.minReleaseAge;
+  if (minReleaseAge !== undefined) {
+    out.minReleaseAgeMs =
+      typeof minReleaseAge === 'number' ? minReleaseAge : parseDuration(String(minReleaseAge));
+  }
+
+  if (input.allowNewPackages !== undefined) {
+    if (
+      !Array.isArray(input.allowNewPackages) ||
+      input.allowNewPackages.some((v) => typeof v !== 'string')
+    ) {
+      throw new UsageError(`${label}: "allowNewPackages" must be an array of package names`);
+    }
+    out.allowNewPackages = input.allowNewPackages as string[];
+  }
   const dir = str('dir');
   if (dir !== undefined) out.dir = dir;
   const cacheTtl = input.cacheTtl;
@@ -395,6 +435,10 @@ export function mergeOptions(fileConfig: Partial<Options>, cli: Partial<Options>
     ...stripUndefined(cli),
     max: { ...(fileConfig.max ?? {}), ...(cli.max ?? {}) },
     ignore: [...(fileConfig.ignore ?? []), ...(cli.ignore ?? [])],
+    allowNewPackages: [
+      ...(fileConfig.allowNewPackages ?? []),
+      ...(cli.allowNewPackages ?? []),
+    ],
   };
 }
 

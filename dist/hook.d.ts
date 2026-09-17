@@ -1,6 +1,7 @@
 import { type Options } from './config.js';
 import { type InstallSpec } from './installcmd.js';
 import { type FetchLike, type OsvQueryResult } from './osvapi.js';
+import { type ReleaseInfo } from './releaseage.js';
 import { type Finding } from './types.js';
 /**
  * Claude Code PreToolUse hook: inspect a Bash command before it runs and stop
@@ -19,6 +20,10 @@ export interface HookInput {
     };
     cwd?: string;
 }
+export interface TooNew {
+    spec: InstallSpec;
+    info: ReleaseInfo;
+}
 export interface HookOutcome {
     decision: Decision;
     /** Human-readable explanation, empty when allowing silently. */
@@ -26,7 +31,10 @@ export interface HookOutcome {
     specs: InstallSpec[];
     malicious: OsvQueryResult[];
     findings: Finding[];
+    tooNew: TooNew[];
 }
+/** Does an `allowNewPackages` entry cover this spec? */
+export declare function isAgeExempt(spec: InstallSpec, allow: string[]): boolean;
 export declare function parseHookInput(raw: string): HookInput | null;
 /**
  * Decide on a command.
@@ -39,6 +47,7 @@ export declare function parseHookInput(raw: string): HookInput | null;
 export declare function evaluateCommand(command: string, dir: string, options?: Partial<Options>, deps?: {
     fetchImpl?: FetchLike;
     timeoutMs?: number;
+    useCache?: boolean;
 }): Promise<HookOutcome>;
 /** The JSON shape Claude Code expects back from a PreToolUse hook. */
 export declare function toHookOutput(outcome: HookOutcome): string;

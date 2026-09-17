@@ -3,6 +3,7 @@ import { parseInstallCommand, type InstallSpec } from './installcmd.js';
 import { normalize } from './normalize.js';
 import { isMalicious, queryAll, toScanOutput, type FetchLike, type OsvQueryResult } from './osvapi.js';
 import { applyPolicy } from './policy.js';
+import { ageMs, formatAge, isTooNew, resolveReleaseTime, type ReleaseInfo } from './releaseage.js';
 import { BAND_RANK, type Finding } from './types.js';
 
 /**
@@ -23,6 +24,11 @@ export interface HookInput {
   cwd?: string;
 }
 
+export interface TooNew {
+  spec: InstallSpec;
+  info: ReleaseInfo;
+}
+
 export interface HookOutcome {
   decision: Decision;
   /** Human-readable explanation, empty when allowing silently. */
@@ -30,6 +36,7 @@ export interface HookOutcome {
   specs: InstallSpec[];
   malicious: OsvQueryResult[];
   findings: Finding[];
+  tooNew: TooNew[];
 }
 
 const ALLOW: HookOutcome = {
@@ -38,7 +45,20 @@ const ALLOW: HookOutcome = {
   specs: [],
   malicious: [],
   findings: [],
+  tooNew: [],
 };
+
+/** Does an `allowNewPackages` entry cover this spec? */
+export function isAgeExempt(spec: InstallSpec, allow: string[]): boolean {
+  return allow.some((entry) => {
+    const trimmed = entry.trim();
+    if (!trimmed) return false;
+    if (trimmed === spec.name) return true;
+    const at = trimmed.startsWith('@') ? trimmed.indexOf('@', 1) : trimmed.indexOf('@');
+    if (at === -1) return false;
+    return trimmed.slice(0, at) === spec.name && trimmed.slice(at + 1) === spec.version;
+  });
+}
 
 export function parseHookInput(raw: string): HookInput | null {
   try {
@@ -61,7 +81,7 @@ export async function evaluateCommand(
   command: string,
   dir: string,
   options?: Partial<Options>,
-  deps: { fetchImpl?: FetchLike; timeoutMs?: number } = {},
+  deps: { fetchImpl?: FetchLike; timeoutMs?: number; useCache?: boolean } = {},
 ): Promise<HookOutcome> {
   const specs = parseInstallCommand(command);
   if (specs.length === 0) return ALLOW;
@@ -69,7 +89,7 @@ export async function evaluateCommand(
   const { config } = loadConfigFile(dir);
   const resolved = mergeOptions(config, options ?? {});
 
-  const results = await queryAll(specs, deps);
+  const results = await queryAll(specs, { fetchImpl: deps.fetchImpl, timeoutMs: deps.timeoutMs });
   const malicious = results.filter((result) => result.vulns.some(isMalicious));
 
   // Malicious advisories are pulled out before scoring: they have no severity
@@ -86,33 +106,63 @@ export async function evaluateCommand(
     (finding) => finding.band !== 'unknown' && BAND_RANK[finding.band] >= BAND_RANK[resolved.failOn],
   );
 
+  const tooNew = await findTooNew(specs, resolved, deps);
+
   if (malicious.length > 0) {
     return {
       decision: 'deny',
-      reason: renderReason(specs, malicious, blocking, results, resolved),
+      reason: renderReason(specs, malicious, blocking, tooNew, results, resolved),
       specs,
       malicious,
       findings: policy.findings,
+      tooNew,
     };
   }
 
-  if (blocking.length > 0) {
+  if (blocking.length > 0 || tooNew.length > 0) {
     return {
       decision: 'ask',
-      reason: renderReason(specs, malicious, blocking, results, resolved),
+      reason: renderReason(specs, malicious, blocking, tooNew, results, resolved),
       specs,
       malicious: [],
       findings: policy.findings,
+      tooNew,
     };
   }
 
   return { ...ALLOW, specs, findings: policy.findings };
 }
 
+/**
+ * Which of these versions were published too recently to trust yet.
+ *
+ * Skipped entirely when the window is zero, so nobody pays a registry
+ * round-trip for a check they turned off.
+ */
+async function findTooNew(
+  specs: InstallSpec[],
+  options: Options,
+  deps: { fetchImpl?: FetchLike; timeoutMs?: number; useCache?: boolean },
+): Promise<TooNew[]> {
+  if (options.minReleaseAgeMs <= 0) return [];
+
+  const candidates = specs.filter((spec) => !isAgeExempt(spec, options.allowNewPackages));
+  if (candidates.length === 0) return [];
+
+  const infos = await Promise.all(
+    candidates.map((spec) => resolveReleaseTime(spec, { ...deps })),
+  );
+
+  return candidates
+    .map((spec, i) => ({ spec, info: infos[i] as ReleaseInfo }))
+    .filter(({ info }) => isTooNew(info, options.minReleaseAgeMs));
+}
+
 function renderReason(
   specs: InstallSpec[],
   malicious: OsvQueryResult[],
   blocking: Finding[],
+  tooNew: TooNew[],
   results: OsvQueryResult[],
   options: Options,
 ): string {
@@ -144,6 +194,14 @@ function renderReason(
     if (finding.summary) lines.push(`           ${finding.summary}`);
   }
 
+  for (const { spec, info } of tooNew) {
+    const age = ageMs(info);
+    lines.push(
+      `TOO NEW    ${spec.name}@${info.version ?? '?'} — published ${age === null ? 'recently' : formatAge(age) + ' ago'}` +
+        (info.resolvedLatest ? ' (resolved from `latest`)' : ''),
+    );
+  }
+
   const failed = results.filter((result) => result.error);
   for (const result of failed) {
     lines.push(`(could not check ${result.spec.name}: ${result.error})`);
@@ -158,11 +216,25 @@ function renderReason(
   }
 
   lines.push('');
-  lines.push(
-    malicious.length > 0
-      ? 'osv-guard blocked this install: OSV reports the package itself as malicious.'
-      : `osv-guard flagged this install at the \`${options.failOn}\` threshold.`,
-  );
+  if (malicious.length > 0) {
+    lines.push('osv-guard blocked this install: OSV reports the package itself as malicious.');
+  } else if (blocking.length > 0) {
+    lines.push(`osv-guard flagged this install at the \`${options.failOn}\` threshold.`);
+  }
+
+  if (tooNew.length > 0 && malicious.length === 0) {
+    const window = formatAge(options.minReleaseAgeMs);
+    lines.push(
+      `osv-guard holds releases younger than ${window}: that is the window in which a`,
+    );
+    lines.push(
+      'compromised release is usually caught and pulled. Approve to install anyway, or',
+    );
+    lines.push(
+      `pin an older version. To stop asking: add "allowNewPackages": ["${tooNew[0]?.spec.name}"]`,
+    );
+    lines.push('to osv-guard.json, or set "minReleaseAge": 0 to turn the check off.');
+  }
 
   return lines.join('\n');
 }

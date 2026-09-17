@@ -3,6 +3,7 @@ import { parseInstallCommand } from './installcmd.js';
 import { normalize } from './normalize.js';
 import { isMalicious, queryAll, toScanOutput } from './osvapi.js';
 import { applyPolicy } from './policy.js';
+import { ageMs, formatAge, isTooNew, resolveReleaseTime } from './releaseage.js';
 import { BAND_RANK } from './types.js';
 const ALLOW = {
     decision: 'allow',
@@ -10,7 +11,22 @@ const ALLOW = {
     specs: [],
     malicious: [],
     findings: [],
+    tooNew: [],
 };
+/** Does an `allowNewPackages` entry cover this spec? */
+export function isAgeExempt(spec, allow) {
+    return allow.some((entry) => {
+        const trimmed = entry.trim();
+        if (!trimmed)
+            return false;
+        if (trimmed === spec.name)
+            return true;
+        const at = trimmed.startsWith('@') ? trimmed.indexOf('@', 1) : trimmed.indexOf('@');
+        if (at === -1)
+            return false;
+        return trimmed.slice(0, at) === spec.name && trimmed.slice(at + 1) === spec.version;
+    });
+}
 export function parseHookInput(raw) {
     try {
         const parsed = JSON.parse(raw);
@@ -34,7 +50,7 @@ export async function evaluateCommand(command, dir, options, deps = {}) {
         return ALLOW;
     const { config } = loadConfigFile(dir);
     const resolved = mergeOptions(config, options ?? {});
-    const results = await queryAll(specs, deps);
+    const results = await queryAll(specs, { fetchImpl: deps.fetchImpl, timeoutMs: deps.timeoutMs });
     const malicious = results.filter((result) => result.vulns.some(isMalicious));
     // Malicious advisories are pulled out before scoring: they have no severity
     // for a threshold to act on, and they are never a judgement call.
@@ -45,27 +61,47 @@ export async function evaluateCommand(command, dir, options, deps = {}) {
     const { findings } = normalize(toScanOutput(scoreable));
     const policy = applyPolicy(findings, resolved);
     const blocking = policy.findings.filter((finding) => finding.band !== 'unknown' && BAND_RANK[finding.band] >= BAND_RANK[resolved.failOn]);
+    const tooNew = await findTooNew(specs, resolved, deps);
     if (malicious.length > 0) {
         return {
             decision: 'deny',
-            reason: renderReason(specs, malicious, blocking, results, resolved),
+            reason: renderReason(specs, malicious, blocking, tooNew, results, resolved),
             specs,
             malicious,
             findings: policy.findings,
+            tooNew,
         };
     }
-    if (blocking.length > 0) {
+    if (blocking.length > 0 || tooNew.length > 0) {
         return {
             decision: 'ask',
-            reason: renderReason(specs, malicious, blocking, results, resolved),
+            reason: renderReason(specs, malicious, blocking, tooNew, results, resolved),
             specs,
             malicious: [],
             findings: policy.findings,
+            tooNew,
         };
     }
     return { ...ALLOW, specs, findings: policy.findings };
 }
-function renderReason(specs, malicious, blocking, results, options) {
+/**
+ * Which of these versions were published too recently to trust yet.
+ *
+ * Skipped entirely when the window is zero, so nobody pays a registry
+ * round-trip for a check they turned off.
+ */
+async function findTooNew(specs, options, deps) {
+    if (options.minReleaseAgeMs <= 0)
+        return [];
+    const candidates = specs.filter((spec) => !isAgeExempt(spec, options.allowNewPackages));
+    if (candidates.length === 0)
+        return [];
+    const infos = await Promise.all(candidates.map((spec) => resolveReleaseTime(spec, { ...deps })));
+    return candidates
+        .map((spec, i) => ({ spec, info: infos[i] }))
+        .filter(({ info }) => isTooNew(info, options.minReleaseAgeMs));
+}
+function renderReason(specs, malicious, blocking, tooNew, results, options) {
     const lines = [];
     for (const result of malicious) {
         const entries = result.vulns.filter(isMalicious);
@@ -89,6 +125,11 @@ function renderReason(specs, malicious, blocking, results, options) {
         if (finding.summary)
             lines.push(`           ${finding.summary}`);
     }
+    for (const { spec, info } of tooNew) {
+        const age = ageMs(info);
+        lines.push(`TOO NEW    ${spec.name}@${info.version ?? '?'} — published ${age === null ? 'recently' : formatAge(age) + ' ago'}` +
+            (info.resolvedLatest ? ' (resolved from `latest`)' : ''));
+    }
     const failed = results.filter((result) => result.error);
     for (const result of failed) {
         lines.push(`(could not check ${result.spec.name}: ${result.error})`);
@@ -99,9 +140,19 @@ function renderReason(specs, malicious, blocking, results, options) {
         lines.push(`Note: ${unpinned.map((s) => s.name).join(', ')} had no pinned version, so this covers every published version.`);
     }
     lines.push('');
-    lines.push(malicious.length > 0
-        ? 'osv-guard blocked this install: OSV reports the package itself as malicious.'
-        : `osv-guard flagged this install at the \`${options.failOn}\` threshold.`);
+    if (malicious.length > 0) {
+        lines.push('osv-guard blocked this install: OSV reports the package itself as malicious.');
+    }
+    else if (blocking.length > 0) {
+        lines.push(`osv-guard flagged this install at the \`${options.failOn}\` threshold.`);
+    }
+    if (tooNew.length > 0 && malicious.length === 0) {
+        const window = formatAge(options.minReleaseAgeMs);
+        lines.push(`osv-guard holds releases younger than ${window}: that is the window in which a`);
+        lines.push('compromised release is usually caught and pulled. Approve to install anyway, or');
+        lines.push(`pin an older version. To stop asking: add "allowNewPackages": ["${tooNew[0]?.spec.name}"]`);
+        lines.push('to osv-guard.json, or set "minReleaseAge": 0 to turn the check off.');
+    }
     return lines.join('\n');
 }
 /** The JSON shape Claude Code expects back from a PreToolUse hook. */
