@@ -1,3 +1,6 @@
 node_modules/
-dist/
 *.tgz
+
+# dist/ is intentionally committed. Claude Code installs a plugin by cloning
+# this repo and never runs a build step, so the hook has to find dist/cli.js
+# already there. Rebuild with `npm run build` before committing source changes.

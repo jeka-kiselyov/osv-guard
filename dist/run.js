@@ -1,0 +1,107 @@
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { buildRunArgs, pmExecutable } from './pm.js';
+import { binDir } from './target.js';
+/** Marks a guarded child, so nested osv-guard invocations can be detected. */
+export const DEPTH_ENV = 'OSV_GUARD_DEPTH';
+/** One nested level is plausible; beyond that it is a loop. */
+const MAX_DEPTH = 2;
+export class RecursionError extends Error {
+}
+/**
+ * Where the child should run.
+ *
+ * A script runs from the package root, because that is what every package
+ * manager does — `npm run` and `pnpm run` never run a script from wherever you
+ * happened to be standing. A command is different: running it through the
+ * guard must be indistinguishable from running it directly, so it keeps the
+ * user's own working directory and its relative paths still mean what they say.
+ */
+export function runCwd(options) {
+    if (options.target.kind === 'script')
+        return options.dir;
+    return options.cwd ?? options.dir;
+}
+/** What we will spawn, without spawning it. */
+export function planRun(options) {
+    if (options.target.kind === 'script') {
+        const { command, shell } = pmExecutable(options.pm);
+        return { command, argv: buildRunArgs(options.pm, options.target.name, options.args), shell };
+    }
+    // A command runs directly: no package manager wrapping, so nothing can
+    // reinterpret its flags on the way through.
+    return { command: options.target.resolved, argv: [...options.args], shell: false };
+}
+function childEnv(dir, env) {
+    const depth = Number.parseInt(env[DEPTH_ENV] ?? '0', 10);
+    const next = Number.isFinite(depth) ? depth + 1 : 1;
+    // Put the project's own tools first, so a guarded command resolves the same
+    // binaries a package-manager script would have.
+    const PATH = [binDir(dir), env.PATH ?? ''].filter(Boolean).join(path.delimiter);
+    return { ...env, PATH, [DEPTH_ENV]: String(next) };
+}
+export function currentDepth(env = process.env) {
+    const depth = Number.parseInt(env[DEPTH_ENV] ?? '0', 10);
+    return Number.isFinite(depth) ? depth : 0;
+}
+export function assertNotLooping(env = process.env) {
+    if (currentDepth(env) >= MAX_DEPTH) {
+        throw new RecursionError(`osv-guard has re-entered itself ${currentDepth(env)} times — the guarded script probably invokes osv-guard again`);
+    }
+}
+/**
+ * Run the target, inheriting stdio, and resolve with its exit code.
+ *
+ * Signals are forwarded rather than letting the default handler kill us first:
+ * Ctrl-C on a guarded dev server should reach the dev server, and we should
+ * exit only once it has.
+ */
+export function runTarget(options) {
+    const env = options.env ?? process.env;
+    const { command, argv, shell } = planRun(options);
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, argv, {
+            cwd: runCwd(options),
+            stdio: 'inherit',
+            shell,
+            env: childEnv(options.dir, env),
+        });
+        const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+        const handlers = signals.map((signal) => {
+            const handler = () => {
+                if (!child.killed)
+                    child.kill(signal);
+            };
+            process.on(signal, handler);
+            return { signal, handler };
+        });
+        const cleanup = () => {
+            for (const { signal, handler } of handlers)
+                process.off(signal, handler);
+        };
+        child.on('error', (error) => {
+            cleanup();
+            reject(error);
+        });
+        child.on('close', (code, signal) => {
+            cleanup();
+            // A signal-terminated child has no exit code; report it the way a shell
+            // would so `$?` still distinguishes "killed" from "exited cleanly".
+            resolve({
+                code: code ?? (signal ? 128 + signalNumber(signal) : 1),
+                signal,
+                argv: [command, ...argv],
+            });
+        });
+    });
+}
+const SIGNAL_NUMBERS = {
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGQUIT: 3,
+    SIGKILL: 9,
+    SIGTERM: 15,
+};
+function signalNumber(signal) {
+    return SIGNAL_NUMBERS[signal] ?? 0;
+}
