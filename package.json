@@ -23,8 +23,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepublishOnly": "npm run version:sync && npm run build",
     "test": "npm run build && node --test test/*.test.js",
+    "version": "npm run version:sync && git add -A",
+    "prepublishOnly": "npm run version:sync && npm run build",
     "version:sync": "node scripts/sync-version.mjs"
   },
   "keywords": [
