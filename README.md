@@ -1,8 +1,73 @@
 # osv-guard
 
-Guard `npm run` scripts behind an [osv-scanner](https://github.com/google/osv-scanner) vulnerability check.
+Two guards against known-bad dependencies, both backed by the [OSV](https://osv.dev) database.
 
-You normally run `npm run dev`. With osv-guard you run `npm run osv-guard dev`: it scans the package the script lives in, and starts the dev server **only** if nothing at or above your threshold turns up. Otherwise it prints a readable report and stops.
+| | What it stops | Needs |
+| --- | --- | --- |
+| **Claude Code plugin** | An agent **installing** a malicious or vulnerable package | Nothing but Claude Code |
+| **CLI** | A script **running** against a vulnerable lockfile | Node 18+, the `osv-scanner` binary |
+
+They cover different halves of the same problem. The CLI checks what is already in your lockfile before it lets a script start. The plugin checks a package *before* it is installed — the gap the CLI cannot reach, because once a bad dependency is in the lockfile its install scripts have already run.
+
+Use either on its own.
+
+---
+
+## Claude Code plugin
+
+Blocks your agent from installing packages OSV knows are malicious.
+
+```bash
+claude plugin marketplace add jeka-kiselyov/osv-guard
+```
+
+```bash
+claude plugin install osv-guard@osv-guard
+```
+
+Inside a session use `/plugin marketplace add …` and `/plugin install …` instead, then `/reload-plugins`.
+
+That's the whole setup. No API key, no account, and **no `osv-scanner` binary** — packages that aren't installed yet aren't in any lockfile, so the hook queries the OSV API directly.
+
+Ask Claude to install something malicious and the command never runs:
+
+```
+MALICIOUS  icomm-mobile@1.0.0 — MAL-2024-2500
+           affected versions: 1.0.0
+           Malicious code in icomm-mobile (npm)
+
+osv-guard blocked this install: OSV reports the package itself as malicious.
+```
+
+It hooks `PreToolUse` on `Bash` and inspects install commands for **npm, pnpm, yarn, bun, pip, uv and poetry**, including ones chained behind other commands (`cd app && yarn add …`) and ones with no version pinned.
+
+| Situation | Decision |
+| --- | --- |
+| OSV reports the package as malicious | **deny** — always, and no `ignore` entry can waive it |
+| Vulnerability at or above your threshold | **ask** — you decide |
+| Anything else, or OSV unreachable | **allow**, silently |
+
+Malware is denied rather than asked because it isn't a severity judgement. That separation is also load-bearing: OSV's malicious-package advisories carry **no severity data at all**, so a threshold on its own would band every one of them `unknown` and wave them through.
+
+A vulnerability only asks. A known CVE in a dependency is often a considered trade-off, and that call belongs to a person. A failed lookup allows — a guard that blocks every install whenever OSV is unreachable is a guard people switch off.
+
+The hook reads the same [config file](#config-file) as the CLI, so `failOn` and `ignore` apply to both.
+
+### What it does and doesn't catch
+
+It knows what OSV knows, so a package published an hour ago isn't in the database yet. Command parsing is pattern-based: an install written in a form it doesn't recognise — a shell variable holding the name, a `curl | sh`, an install inside a script file — passes through. It's a good net for typo-squats and compromised packages, not a sandbox.
+
+To check the hook by hand:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"npm i minimist@0.0.8"}}' | osv-guard hook
+```
+
+---
+
+## CLI
+
+Guards what you **run**. `npm run dev` becomes a scan of the package the script lives in, and the dev server starts only if nothing at or above your threshold turns up.
 
 ```
 osv-guard · scanned . (package-lock.json) 1.2s
@@ -21,11 +86,7 @@ osv-guard · scanned . (package-lock.json) 1.2s
   `npm run dev` was not started.
 ```
 
-## What is osv-scanner?
-
-If you haven't met it before: [osv-scanner](https://github.com/google/osv-scanner) is a free, open-source command-line vulnerability scanner built and maintained by **Google**. It's free and needs no account or API key. By default it queries the OSV database over the network, sending dependency names and versions rather than your code; `--offline` uses a downloaded local copy instead.
-
-## Requirements
+### Requirements
 
 Node 18+, and the `osv-scanner` binary (v2) on your `PATH`:
 
@@ -36,7 +97,9 @@ brew install osv-scanner
 Or `go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest`, or grab a
 [release binary](https://github.com/google/osv-scanner/releases). Point at a non-`PATH` install with `--scanner-bin`.
 
-## Install
+[osv-scanner](https://github.com/google/osv-scanner) is a free, open-source vulnerability scanner built and maintained by **Google**. It needs no account or API key. By default it queries the OSV database over the network, sending dependency names and versions rather than your code; `--offline` uses a downloaded local copy instead.
+
+### Install
 
 ```bash
 npm install --save-dev osv-guard
@@ -55,7 +118,7 @@ Then put the guard in front of whatever you want to protect:
 
 `npm run dev` / `pnpm dev` now scan first and start the tool only if the scan passes.
 
-## Usage
+### Usage
 
 ```bash
 osv-guard <target> [args...]        # scan, then run <target>
@@ -80,6 +143,8 @@ Options go **before** the target; everything after it is forwarded verbatim.
 osv-guard --fail-on critical dev --port 3000
 ```
 
+Note that `"build": "osv-guard build"` would make osv-guard run `build`, which re-invokes osv-guard, forever. osv-guard detects that and refuses with the fix rather than hanging.
+
 ### Package managers
 
 Scripts run through the package manager your project actually uses — detected from the `packageManager` field, then the lockfile, then the invoking user agent — or forced with `--package-manager`.
@@ -95,19 +160,7 @@ This matters for argument forwarding, which is **not** portable:
 
 osv-guard applies the right form per package manager, so `--port 3000` arrives intact either way. Commands run directly, with nothing in between to reinterpret their flags.
 
-### Guarding a build
-
-```json
-{
-  "scripts": {
-    "build": "osv-guard hardhat build"
-  }
-}
-```
-
-Note that `"build": "osv-guard build"` would make osv-guard run `build`, which re-invokes osv-guard, forever. osv-guard detects that and refuses with the fix rather than hanging.
-
-## Thresholds
+### Thresholds
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -120,7 +173,7 @@ Note that `"build": "osv-guard build"` would make osv-guard run `build`, which r
 
 A `--max-<band>` budget replaces the threshold **for that band only**, so `--fail-on high --max-high 2` tolerates two highs while still blocking on any critical.
 
-## Suppression
+### Suppression
 
 | Flag | Meaning |
 | --- | --- |
@@ -131,7 +184,7 @@ Ignore entries that match nothing are reported, so stale suppressions don't quie
 
 For long-lived, per-advisory suppressions prefer osv-scanner's own `osv-scanner.toml`, which osv-guard picks up automatically.
 
-## Scanning
+### Scanning
 
 | Flag | Meaning |
 | --- | --- |
@@ -144,7 +197,7 @@ For long-lived, per-advisory suppressions prefer osv-scanner's own `osv-scanner.
 | `--cache` | Reuse a recent scan for the same lockfile (**off by default**) |
 | `--cache-ttl <duration>` | Cache lifetime — `30s`, `15m`, `1h` (default `1h`; implies `--cache`) |
 
-### About the cache
+#### About the cache
 
 Off by default: a guard that can return a stale answer isn't much of a guard. When you do enable it, the key is the **hash of your lockfile contents**, so any dependency change busts it immediately — the TTL only bounds how long an *unchanged* tree is trusted.
 
@@ -152,7 +205,7 @@ Policy flags are applied *after* the cache, so tightening `--fail-on` or adding 
 
 Cached results live in `node_modules/.cache/osv-guard/`.
 
-### Monorepos
+#### Monorepos
 
 Scanning is recursive, so a monorepo root is a valid target even when only the sub-packages carry lockfiles:
 
@@ -169,11 +222,11 @@ Run osv-guard *inside* a package instead and it scans only that package, since t
 
 `--cache` keys on the contents of every lockfile found, sub-packages included, so a dependency change anywhere in the monorepo invalidates it.
 
-### About lockfiles
+#### About lockfiles
 
 If there's no lockfile anywhere in the tree, osv-guard stops rather than scanning. osv-scanner would find nothing to resolve, and an empty result is indistinguishable from a clean one — a false green is worse than an error. Run `npm install`, or pass `--allow-no-lockfile` to accept an unchecked run.
 
-## Output
+### Output
 
 | Flag | Meaning |
 | --- | --- |
@@ -185,41 +238,30 @@ If there's no lockfile anywhere in the tree, osv-guard stops rather than scannin
 
 Reports go to **stderr** and `--format=json` goes to stdout, so `osv-guard report --json | jq` works while a guarded script keeps its own stdout clean.
 
-## Claude Code plugin
+### Exit codes
 
-osv-guard also ships as a Claude Code plugin. The CLI guards what you **run**; the plugin guards what gets **installed** — which is the gap the CLI cannot reach, because by the time a bad dependency is in your lockfile its install scripts have already executed.
-
-It hooks `PreToolUse` on `Bash`, spots install commands for npm, pnpm, yarn, bun, pip, uv and poetry, and checks each package against OSV before the command runs:
-
-```
-MALICIOUS  custom-solutions@20.8.9 — MAL-2024-1000
-           affected versions: 20.8.9, 20.9.1, 20.8.8
-           Malicious code in custom-solutions (npm)
-
-osv-guard blocked this install: OSV reports the package itself as malicious.
-```
-
-| Situation | Decision |
+| Code | Meaning |
 | --- | --- |
-| OSV reports the package as malicious | **deny** — always, and no `ignore` entry can waive it |
-| Vulnerability at or above your threshold | **ask** — you decide |
-| Anything else, or OSV unreachable | **allow**, silently |
+| `0` | Passed (and the script exited 0) |
+| `1` | Blocked by policy — the script was not run |
+| `2` | Usage or configuration error |
+| `3` | osv-scanner missing or failed |
+| * | Otherwise, the script's own exit code |
 
-Malware is denied rather than asked because it isn't a severity judgement. It's also why malicious packages are handled separately from thresholds at all: OSV's malicious-package advisories carry **no severity data**, so a threshold alone would band every one of them `unknown` and let them through.
+### CI
 
-A vulnerability is only `ask`: a known CVE in a dependency is often a considered trade-off, and that call belongs to a person. A failed lookup allows — a guard that blocks every install whenever OSV is unreachable is one people switch off.
-
-The hook reads the same `osv-guard.json` as the CLI, so `failOn` and `ignore` apply to both. It needs no osv-scanner binary: packages that aren't installed yet aren't in any lockfile, so it queries the OSV API directly.
-
-You can also run it by hand:
-
-```bash
-echo '{"tool_name":"Bash","tool_input":{"command":"npm i minimist@0.0.8"}}' | osv-guard hook
+```yaml
+- run: npm ci
+- run: npx osv-guard report --format json > osv.json
 ```
+
+Exit code `1` fails the job on a policy violation; `3` distinguishes a broken scanner from a real finding.
+
+---
 
 ## Config file
 
-Settings can live in `osv-guard.json`, `.osv-guardrc.json`, or an `osv-guard` key in `package.json`. Command-line flags win.
+Shared by the CLI and the plugin. Settings can live in `osv-guard.json`, `.osv-guardrc.json`, or an `osv-guard` key in `package.json`. Command-line flags win.
 
 ```json
 {
@@ -229,16 +271,6 @@ Settings can live in `osv-guard.json`, `.osv-guardrc.json`, or an `osv-guard` ke
   "ignoreUnfixed": true
 }
 ```
-
-## Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| `0` | Passed (and the script exited 0) |
-| `1` | Blocked by policy — the script was not run |
-| `2` | Usage or configuration error |
-| `3` | osv-scanner missing or failed |
-| * | Otherwise, the script's own exit code |
 
 ## How severity is decided
 
@@ -253,15 +285,6 @@ Each group's band comes from the first available of:
 Anything left is reported as `unknown` rather than assumed benign. Unknowns don't block by default — `--fail-on-unknown` changes that. CVSS v4-only vectors currently land in `unknown`; in practice `max_severity` covers them.
 
 The suggested fix version is taken from the affected range that actually contains your installed version, so `axios@0.21.0` is told about `0.31.1`, not about a fix on the 1.x line.
-
-## CI
-
-```yaml
-- run: npm ci
-- run: npx osv-guard report --format json > osv.json
-```
-
-Exit code `1` fails the job on a policy violation; `3` distinguishes a broken scanner from a real finding.
 
 ## License
 
