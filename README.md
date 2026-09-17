@@ -5,7 +5,7 @@ Two guards against known-bad dependencies, both backed by the [OSV](https://osv.
 | | What it stops | Needs |
 | --- | --- | --- |
 | **Claude Code plugin** | An agent **installing** a malicious or vulnerable package | Nothing but Claude Code |
-| **CLI** | A script **running** against a vulnerable lockfile | Node 18+, the `osv-scanner` binary |
+| **CLI** | **Executing** `npm run` commands and scripts against a vulnerable lockfile | Node 18+, the `osv-scanner` binary |
 
 They cover different halves of the same problem. The CLI checks what is already in your lockfile before it lets a script start. The plugin checks a package *before* it is installed — the gap the CLI cannot reach, because once a bad dependency is in the lockfile its install scripts have already run.
 
