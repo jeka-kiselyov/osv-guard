@@ -1,5 +1,5 @@
 /**
- * The version lives in four places. They have already drifted once — a bump
+ * The version lives in six places. They have already drifted once — a bump
  * done by find-and-replace silently matched nothing when one file was out of
  * step. This test is the thing that would have caught it.
  */
@@ -18,6 +18,10 @@ test('every manifest carries the same version as package.json', () => {
   assert.match(version, /^\d+\.\d+\.\d+/, 'package.json has a sane version');
 
   assert.equal(read('.claude-plugin', 'plugin.json').version, version, 'plugin.json');
+
+  const lock = read('package-lock.json');
+  assert.equal(lock.version, version, 'package-lock.json root');
+  assert.equal(lock.packages[''].version, version, 'package-lock.json packages[""]');
 
   const market = read('.claude-plugin', 'marketplace.json');
   assert.equal(market.metadata.version, version, 'marketplace.json metadata');
