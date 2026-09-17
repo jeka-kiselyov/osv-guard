@@ -1,6 +1,6 @@
 {
   "name": "osv-guard",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Guard npm/pnpm/yarn/bun scripts and commands behind an osv-scanner vulnerability check.",
   "type": "module",
   "bin": {
@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run build",
-    "test": "npm run build && node --test test/*.test.js"
+    "test": "npm run build && node --test test/*.test.js",
+    "version:sync": "node scripts/sync-version.mjs"
   },
   "keywords": [
     "osv",

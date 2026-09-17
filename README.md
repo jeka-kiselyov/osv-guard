@@ -4,12 +4,10 @@ Two guards against known-bad dependencies, both backed by the [OSV](https://osv.
 
 | | What it stops | Needs |
 | --- | --- | --- |
-| **Claude Code plugin** | An agent **installing** a malicious or vulnerable package | Nothing but Claude Code |
-| **CLI** | **Executing** `npm run` commands and scripts against a vulnerable lockfile | Node 18+, the `osv-scanner` binary |
+| [**Claude Code plugin**](#claude-code-plugin) | An agent **installing** a malicious or vulnerable package | Nothing but Claude Code |
+| [**npm run guard**](#cli) | **Executing** `npm run` commands and scripts against a vulnerable lockfile | Node 18+, the `osv-scanner` binary |
 
-They cover different halves of the same problem. The CLI checks what is already in your lockfile before it lets a script start. The plugin checks a package *before* it is installed — the gap the CLI cannot reach, because once a bad dependency is in the lockfile its install scripts have already run.
-
-Use either on its own.
+They cover different halves of the same problem. The CLI checks what is already in your lockfile before it lets a script start. The plugin checks a package *before* your agent is allowed to install it — the gap the CLI cannot reach, because once a bad dependency is in the lockfile its install scripts have already run.
 
 ---
 
@@ -19,13 +17,10 @@ Blocks your agent from installing packages OSV knows are malicious.
 
 ```bash
 claude plugin marketplace add jeka-kiselyov/osv-guard
-```
-
-```bash
 claude plugin install osv-guard@osv-guard
 ```
 
-Inside a session use `/plugin marketplace add …` and `/plugin install …` instead, then `/reload-plugins`.
+Inside a session, use `/plugin marketplace add …` and `/plugin install …` instead, then `/reload-plugins`.
 
 That's the whole setup. No API key, no account, and **no `osv-scanner` binary** — packages that aren't installed yet aren't in any lockfile, so the hook queries the OSV API directly.
 
@@ -39,18 +34,16 @@ MALICIOUS  icomm-mobile@1.0.0 — MAL-2024-2500
 osv-guard blocked this install: OSV reports the package itself as malicious.
 ```
 
-It hooks `PreToolUse` on `Bash` and inspects install commands for **npm, pnpm, yarn, bun, pip, uv and poetry**, including ones chained behind other commands (`cd app && yarn add …`) and ones with no version pinned.
+Claude isn't asked to verify anything and isn't consulted on the verdict — the hook queries OSV itself and hands back a decision, so an agent can't skip it, forget it, or be argued out of it.
 
 | Situation | Decision |
 | --- | --- |
 | OSV reports the package as malicious | **deny** — always, and no `ignore` entry can waive it |
 | Vulnerability at or above your threshold | **ask** — you decide |
 | Version published less than 7 days ago | **ask** — you decide |
-| Anything else, or a registry unreachable | **allow**, silently |
+| Anything else, or a registry is unreachable | **allow**, silently |
 
 Malware is denied rather than asked because it isn't a severity judgement. That separation is also load-bearing: OSV's malicious-package advisories carry **no severity data at all**, so a threshold on its own would band every one of them `unknown` and wave them through.
-
-A vulnerability only asks. A known CVE in a dependency is often a considered trade-off, and that call belongs to a person. A failed lookup allows — a guard that blocks every install whenever OSV is unreachable is a guard people switch off.
 
 ### Brand-new releases
 
@@ -73,21 +66,11 @@ If a registry is slow or a package predates its publish-time data, the age is un
 
 The hook reads the same [config file](#config-file) as the CLI, so `failOn` and `ignore` apply to both.
 
-### What it does and doesn't catch
-
-It knows what OSV knows, so a package published an hour ago isn't in the database yet. Command parsing is pattern-based: an install written in a form it doesn't recognise — a shell variable holding the name, a `curl | sh`, an install inside a script file — passes through. It's a good net for typo-squats and compromised packages, not a sandbox.
-
-To check the hook by hand:
-
-```bash
-echo '{"tool_name":"Bash","tool_input":{"command":"npm i minimist@0.0.8"}}' | osv-guard hook
-```
-
 ---
 
 ## CLI
 
-Guards what you **run**. `npm run dev` becomes a scan of the package the script lives in, and the dev server starts only if nothing at or above your threshold turns up.
+Guards what you **run** — any npm script. For example, change `"dev": "vite"` to `"dev": "osv-guard vite"` in your `package.json`. Now `npm run dev` (or `pnpm dev`) first scans the package the script lives in, and the dev server starts only if nothing at or above your threshold turns up.
 
 ```
 osv-guard · scanned . (package-lock.json) 1.2s
@@ -168,17 +151,6 @@ Note that `"build": "osv-guard build"` would make osv-guard run `build`, which r
 ### Package managers
 
 Scripts run through the package manager your project actually uses — detected from the `packageManager` field, then the lockfile, then the invoking user agent — or forced with `--package-manager`.
-
-This matters for argument forwarding, which is **not** portable:
-
-| Command | Script receives |
-| --- | --- |
-| `npm run dev -- --port 3000` | `["--port","3000"]` ✅ |
-| `npm run dev --port 3000` | `["3000"]` — npm ate the flag |
-| `pnpm run dev -- --port 3000` | `["--","--port","3000"]` — literal `--` |
-| `pnpm run dev --port 3000` | `["--port","3000"]` ✅ |
-
-osv-guard applies the right form per package manager, so `--port 3000` arrives intact either way. Commands run directly, with nothing in between to reinterpret their flags.
 
 ### Thresholds
 
